@@ -1,0 +1,1139 @@
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { initializeApp } from "firebase/app";
+import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from "firebase/auth";
+import { getFirestore, doc, getDoc, setDoc, addDoc, collection, onSnapshot, updateDoc, deleteDoc, writeBatch, query, where, getDocs, serverTimestamp, arrayUnion, arrayRemove } from "firebase/firestore";
+import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, ScatterChart, Scatter, ZAxis, CartesianGrid } from 'recharts';
+
+// --- Firebase Configuration ---
+const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+// --- Gemini API Helper ---
+const callGeminiAPI = async (prompt) => {
+    const apiKey = ""; // Should be empty, managed by the environment
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+    try {
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+        });
+        if (!response.ok) {
+            const errorBody = await response.text();
+            console.error("API Error Response:", errorBody);
+            throw new Error(`API request failed with status ${response.status}`);
+        }
+        const data = await response.json();
+        return data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    } catch (error) {
+        console.error("Error calling Gemini API:", error);
+        return "Error generating suggestion. Please try again.";
+    }
+};
+
+
+// --- Icon Components ---
+const ICONS = {
+    Dashboard: ({ className }) => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><rect x="3" y="3" width="7" height="9"></rect><rect x="14" y="3" width="7" height="5"></rect><rect x="14" y="12" width="7" height="9"></rect><rect x="3" y="16" width="7" height="5"></rect></svg>,
+    Stakeholders: ({ className }) => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M22 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>,
+    ImpactAnalysis: ({ className }) => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="m2.5 2.5 2 2"></path><path d="M21.5 21.5 14 14"></path><path d="m9 15-1-1"></path><path d="m14 10 1 1"></path><path d="M2.5 21.5 12 12"></path><path d="m12 12 9.5-9.5"></path></svg>,
+    RiskManagement: ({ className }) => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="m13 2-3 14.5 9 5.5-4-11.5z"></path><path d="m2.3 2.3 3.1 11.4 7.2-4.1-3.2-11.3z"></path><path d="M12 12a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"></path><path d="m22 22-5-5"></path></svg>,
+    Capability: ({ className }) => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M20 13.4V4a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2.6"></path><path d="m12 12 4 10 4-10"></path><path d="M10 12h12"></path></svg>,
+    SuccessMetrics: ({ className }) => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z"></path><path d="m9 12 2 2 4-4"></path></svg>,
+    CommunicationPlan: ({ className }) => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"></path><path d="m15 5 4 4"></path></svg>,
+    TrainingPlan: ({ className }) => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"></path></svg>,
+    Readiness: ({ className }) => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M12 2v4"></path><path d="m16 6-2-2-2 2"></path><path d="M18 13a6 6 0 1 1-6-6 6 6 0 0 1 6 6z"></path><path d="M12 13v-2"></path></svg>,
+    ReportBuilder: ({ className }) => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><line x1="10" y1="9" x2="8" y2="9"></line></svg>,
+    Admin: ({ className }) => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 0 2.22l-.15.1a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l-.22-.38a2 2 0 0 0-.73-2.73l-.15-.1a2 2 0 0 1 0-2.22l.15-.1a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path><circle cx="12" cy="12" r="3"></circle></svg>,
+    Plus: ({ className }) => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>,
+    Edit: ({ className }) => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>,
+    Trash: ({ className }) => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>,
+    PanelRight: ({ className }) => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M15 3v18"/></svg>,
+    X: ({ className }) => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>,
+    Sparkles: ({ className }) => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="m12 3-1.9 4.8-4.8 1.9 4.8 1.9L12 16l1.9-4.8 4.8-1.9-4.8-1.9L12 3z"/><path d="M5 21v-3.5l-2-2 2-2V10l3.5 2 2-2 2 2 2-3.5V21l-2 2-2-2-2 2-3.5-2z"/><path d="M19 3v3.5l2 2-2 2V14l-3.5-2-2 2-2-2-2 3.5V3l2-2 2 2 2-2 3.5 2z"/></svg>,
+};
+
+const NAV_ITEMS = [ { id: 'Dashboard', icon: 'Dashboard' }, { id: 'Stakeholders', icon: 'Stakeholders' }, { id: 'ImpactAnalysis', title: 'Impact Analysis', icon: 'ImpactAnalysis' }, { id: 'RiskManagement', title: 'Risk Management', icon: 'RiskManagement' }, { id: 'Capability', icon: 'Capability' }, { id: 'SuccessMetrics', title: 'Success Metrics', icon: 'SuccessMetrics' }, { id: 'CommunicationPlan', title: 'Communication Plan', icon: 'CommunicationPlan' }, { id: 'TrainingPlan', title: 'Training Plan', icon: 'TrainingPlan' }, { id: 'Readiness', icon: 'Readiness' }, { id: 'ReportBuilder', title: 'Report Builder', icon: 'ReportBuilder' }, { id: 'Admin', icon: 'Admin' }, ];
+const LoadingSpinner = ({ small }) => ( <div className={`flex justify-center items-center ${small ? 'h-5' : 'h-full'}`}> <div className={`animate-spin rounded-full border-t-2 border-b-2 border-[#B38B59] ${small ? 'h-5 w-5' : 'h-16 w-16'}`}></div> </div> );
+
+const seedData = async (db, userId) => { console.log("Seeding default data..."); try { const batch = writeBatch(db); const { customers, projects, projectData } = defaultData; for (const customer of customers) { const customerRef = doc(db, `artifacts/${appId}/users/${userId}/customers`, customer.id); batch.set(customerRef, { name: customer.name }); if (projects[customer.id]) { for (const project of projects[customer.id]) { const projectRef = doc(db, `artifacts/${appId}/users/${userId}/customers/${customer.id}/projects`, project.id); batch.set(projectRef, { name: project.name, capabilities: project.capabilities || [] }); if (projectData[project.id]) { for (const collectionName in projectData[project.id]) { for (const item of projectData[project.id][collectionName]) { const itemRef = doc(collection(db, `artifacts/${appId}/users/${userId}/projects/${project.id}/${collectionName}`)); batch.set(itemRef, { ...item, createdAt: serverTimestamp() }); } } } } } } await batch.commit(); alert("Default data has been seeded successfully!"); } catch (error) { console.error("Error seeding data:", error); alert(`Failed to seed data. ${error.message}`); } };
+
+const defaultData = { customers: [ { id: "innovate-inc", name: "Innovate Inc." }, { id: "global-logistics-co", name: "Global Logistics Co." } ], projects: { "innovate-inc": [ { id: "project-phoenix", name: "Project Phoenix - CRM Rollout", capabilities: ["Salesforce Proficiency", "Client Communication", "Data Migration", "Agile Methodology"] }, { id: "quantum-leap", name: "Quantum Leap - AI Support Bot", capabilities: ["AI/ML Concepts", "Python Programming", "Customer Support Protocols"] } ], "global-logistics-co": [ { id: "supply-chain-overhaul", name: "Supply Chain Overhaul", capabilities: ["Logistics Management", "SAP S/4HANA", "Vendor Negotiation"] } ] }, projectData: { "project-phoenix": { stakeholders: [ { name: "John Carter", role: "VP of Sales", influence: 5, interest: 5, engagement: "Supportive", capabilityImpacted: "Client Communication", engagementStrategy: "Maintain high engagement through regular one-on-one updates and involve in strategic decisions." }, { name: "Sarah Lee", role: "Sales Manager", influence: 4, interest: 5, engagement: "Supportive", capabilityImpacted: "Salesforce Proficiency", engagementStrategy: "Empower as a change champion and provide early access to new features for feedback." }, { name: "Tom Allen", role: "IT Director", influence: 3, interest: 4, engagement: "Neutral", capabilityImpacted: "Data Migration", engagementStrategy: "Provide clear technical documentation and involve IT team in deployment planning to address concerns." }, { name: "Mike Chen", role: "Account Executive", influence: 2, interest: 5, engagement: "Supportive", capabilityImpacted: "Salesforce Proficiency", engagementStrategy: "Ensure comprehensive training and highlight personal benefits like simplified commission tracking." }, { name: "Emily White", role: "Project Manager", influence: 4, interest: 4, engagement: "Supportive", capabilityImpacted: "Agile Methodology", engagementStrategy: "Collaborate on project milestones and provide necessary resources to ensure smooth execution." }, { name: "David Green", role: "Sales Operations", influence: 3, interest: 5, engagement: "Neutral", capabilityImpacted: "Salesforce Proficiency", engagementStrategy: "Involve in user acceptance testing and process mapping to ensure the new system meets operational needs." }, { name: "Lisa Ray", role: "Head of Customer Success", influence: 4, interest: 3, engagement: "Resistant", capabilityImpacted: "Client Communication", engagementStrategy: "Address concerns about customer data handling directly and demonstrate new system's benefits for client relations." } ], risks: [ { description: "User adoption is slower than anticipated.", likelihood: 4, impact: 5, mitigationPlan: "Develop a robust, multi-stage training program with targeted content for different roles. Identify and empower change champions within the sales team to provide peer support and build positive momentum." }, { description: "Data migration from legacy system encounters unexpected data quality issues.", likelihood: 3, impact: 5, mitigationPlan: "Conduct a thorough data audit and cleaning phase before migration. Develop a clear data validation plan to be executed post-migration to quickly identify and rectify any discrepancies." }, { description: "Integration with existing marketing automation tool fails, disrupting lead flow.", likelihood: 2, impact: 4, mitigationPlan: "Build a detailed integration map with the vendor and perform end-to-end testing in a sandbox environment before deploying to production. Prepare a manual lead-entry contingency plan." } ], impacts: [ { group: "Sales Team", process: "Lead Management", description: "From: Manual lead tracking in spreadsheets. To: Automated lead capture and routing in Salesforce.", impactLevel: 5, impactType: "Technology" }, { group: "Sales Team", process: "Commission Reporting", description: "From: Manual monthly commission reports. To: Real-time, automated commission dashboards.", impactLevel: 4, impactType: "Process" }, { group: "IT Support", process: "User Account Provisioning", description: "From: No CRM user management. To: Managing user licenses, profiles, and permissions in Salesforce.", impactLevel: 3, impactType: "Role" }, { group: "Sales Leadership", process: "Sales Forecasting", description: "From: Forecasting based on individual spreadsheet rollups. To: Centralized, data-driven forecasting using Salesforce analytics.", impactLevel: 5, impactType: "Technology" } ], capabilities: [ { group: "Sales Team", capability: "Salesforce Proficiency", current: 2, target: 4 }, { group: "Sales Team", capability: "Client Communication", current: 4, target: 4 }, { group: "Sales Leadership", capability: "Salesforce Proficiency", current: 3, target: 5 }, { group: "IT Support", capability: "Data Migration", current: 3, target: 4 } ], successMetrics: [ { metric: "Increase lead conversion rate by 15%", category: "Business Outcome", target: 15, current: 5, status: "At Risk", dataSource: "Salesforce Report" }, { metric: "Achieve 90% daily active usage of Salesforce by Sales Team", category: "Adoption", target: 90, current: 45, status: "Off Track", dataSource: "Salesforce Login Data" }, { metric: "Reduce average time to generate sales reports by 50%", category: "Proficiency", target: 50, current: 10, status: "On Track", dataSource: "Time Tracking Study" } ], communications: [ { message: "Project Kick-off Announcement", audience: "All Employees", channel: "Email", frequency: "Once", startDate: "2025-09-05" }, ], trainings: [ { topic: "Salesforce 101 for Sales Team", format: "Workshop", group: "Sales Team" }, ], readiness: [ { area: "Sponsorship", score: 5, comments: "Strong executive backing." }, ] } } };
+
+// --- Success Metrics Components ---
+const SuccessMetricModal = ({ isOpen, onClose, db, userId, project, editingMetric }) => {
+    const [formData, setFormData] = useState({});
+    const [isGenerating, setIsGenerating] = useState(false);
+    
+    useEffect(() => {
+        if(editingMetric) {
+            setFormData(editingMetric);
+        } else {
+            setFormData({ metric: '', category: 'Business Outcome', target: 0, current: 0, status: 'On Track', dataSource: '' });
+        }
+    }, [editingMetric, isOpen]);
+
+    const handleChange = (e) => {
+        const { name, value } = e.target;
+        setFormData(prev => ({ ...prev, [name]: (name === 'target' || name === 'current') ? Number(value) : value }));
+    };
+
+    const handleSuggestMetrics = async () => {
+        setIsGenerating(true);
+        const prompt = `As a change management expert, suggest one key success metric for a project called "${project.name}". The metric should be in the category of "${formData.category}". Provide a concise, one-sentence description for the metric.`;
+        const suggestion = await callGeminiAPI(prompt);
+        setFormData(prev => ({ ...prev, metric: suggestion }));
+        setIsGenerating(false);
+    };
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        const collectionRef = collection(db, `artifacts/${appId}/users/${userId}/projects/${project.id}/successMetrics`);
+        if (formData.id) {
+            await updateDoc(doc(collectionRef, formData.id), formData);
+        } else {
+            await addDoc(collectionRef, { ...formData, createdAt: serverTimestamp() });
+        }
+        onClose();
+    };
+    
+    if (!isOpen) return null;
+    return (
+        <div className="fixed inset-0 bg-black bg-opacity-70 flex justify-center items-center z-50">
+            <div className="bg-[#1F1F1F] border border-[#333] p-8 rounded-lg shadow-2xl w-full max-w-lg m-4">
+                <h3 className="font-jakarta text-2xl font-bold text-[#B38B59] mb-6">{formData.id ? 'Edit' : 'Add'} Success Metric</h3>
+                <form onSubmit={handleSubmit} className="space-y-4">
+                     <select name="category" value={formData.category || 'Business Outcome'} onChange={handleChange} className="w-full p-2 border border-[#333] rounded-md bg-[#141414] text-[#F3F4F6]">
+                        <option>Business Outcome</option><option>Adoption</option><option>Proficiency</option><option>Sentiment</option>
+                    </select>
+                     <div>
+                        <div className="flex justify-between items-center mb-1">
+                             <label className="block text-sm font-medium text-gray-400">Metric Description</label>
+                            <button type="button" onClick={handleSuggestMetrics} disabled={isGenerating} className="flex items-center gap-2 text-sm text-[#B38B59] hover:text-[#a17c50] disabled:opacity-50">
+                                {isGenerating ? <LoadingSpinner small/> : <ICONS.Sparkles className="w-4 h-4" />}
+                                ✨ Suggest Metric
+                            </button>
+                        </div>
+                        <textarea name="metric" value={formData.metric || ''} onChange={handleChange} placeholder="e.g., Increase lead conversion rate by 15%" required className="w-full p-2 border border-[#333] rounded-md bg-[#141414] text-[#F3F4F6] min-h-[80px]"></textarea>
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                         <input type="number" name="target" value={formData.target || 0} onChange={handleChange} placeholder="Target Value" required className="w-full p-2 border border-[#333] rounded-md bg-[#141414] text-[#F3F4F6]"/>
+                         <input type="number" name="current" value={formData.current || 0} onChange={handleChange} placeholder="Current Value" required className="w-full p-2 border border-[#333] rounded-md bg-[#141414] text-[#F3F4F6]"/>
+                    </div>
+                     <select name="status" value={formData.status || 'On Track'} onChange={handleChange} className="w-full p-2 border border-[#333] rounded-md bg-[#141414] text-[#F3F4F6]">
+                        <option>On Track</option><option>At Risk</option><option>Off Track</option><option>Achieved</option>
+                    </select>
+                     <input type="text" name="dataSource" value={formData.dataSource || ''} onChange={handleChange} placeholder="Data Source (e.g., Salesforce Report)" required className="w-full p-2 border border-[#333] rounded-md bg-[#141414] text-[#F3F4F6]"/>
+                     <div className="flex justify-end gap-4 pt-4">
+                        <button type="button" onClick={onClose} className="px-6 py-2 bg-[#333] text-white font-jakarta font-bold rounded-md hover:bg-[#444]">Cancel</button>
+                        <button type="submit" className="px-6 py-2 bg-[#B38B59] text-white font-jakarta font-bold rounded-md hover:bg-[#a17c50]">Save</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    );
+};
+
+const SuccessMetricsAnalysis = ({ metrics, isCollapsed, onToggle }) => {
+    const statusData = useMemo(() => {
+        const counts = metrics.reduce((acc, m) => {
+            acc[m.status] = (acc[m.status] || 0) + 1;
+            return acc;
+        }, {});
+        return Object.keys(counts).map(key => ({ name: key, value: counts[key] }));
+    }, [metrics]);
+    
+    const performanceData = useMemo(() => {
+        const categories = {};
+        metrics.forEach(m => {
+            if(!categories[m.category]) categories[m.category] = { name: m.category, 'On Track': 0, 'At Risk': 0, 'Off Track': 0, 'Achieved': 0 };
+            categories[m.category][m.status]++;
+        });
+        return Object.values(categories);
+    }, [metrics]);
+    
+    const STATUS_COLORS = { 'On Track': '#22c55e', 'At Risk': '#eab308', 'Off Track': '#ef4444', 'Achieved': '#3b82f6' };
+
+    return (
+        <>
+            <div className={`fixed inset-0 bg-black/60 z-40 transition-opacity ${!isCollapsed ? 'opacity-100' : 'opacity-0 pointer-events-none'}`} onClick={onToggle}></div>
+            <aside className={`fixed top-0 right-0 h-full w-full max-w-2xl bg-[#1F1F1F] border-l border-[#333] z-50 transition-transform duration-300 ease-in-out ${!isCollapsed ? 'translate-x-0' : 'translate-x-full'}`}>
+                 <div className="flex flex-col h-full">
+                    <div className="p-6 flex justify-between items-center border-b border-[#333]">
+                        <h3 className="font-jakarta text-xl font-bold text-[#B38B59] mb-0 whitespace-nowrap">Performance Dashboard</h3>
+                        <button onClick={onToggle} className="text-gray-400 hover:text-white"><ICONS.X className="w-6 h-6"/></button>
+                    </div>
+                     <div className="overflow-y-auto p-6">
+                        <div className="flex flex-col gap-8">
+                             <div>
+                                <h4 className="font-jakarta text-lg text-white mb-4">Overall KPI Status</h4>
+                                <ResponsiveContainer width="100%" height={250}>
+                                    <PieChart>
+                                        <Pie data={statusData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={60} outerRadius={80} paddingAngle={5} label>
+                                             {statusData.map((entry, index) => (<Cell key={`cell-${index}`} fill={STATUS_COLORS[entry.name]} />))}
+                                        </Pie>
+                                        <Tooltip contentStyle={{ backgroundColor: '#141414', border: '1px solid #333', color: '#F3F4F6' }}/>
+                                        <Legend wrapperStyle={{ color: '#E5E7EB' }} />
+                                    </PieChart>
+                                </ResponsiveContainer>
+                            </div>
+                             <div>
+                                <h4 className="font-jakarta text-lg text-white mb-4">Performance by Category</h4>
+                                <ResponsiveContainer width="100%" height={300}>
+                                    <BarChart data={performanceData} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
+                                        <CartesianGrid stroke="#333" strokeDasharray="3 3"/>
+                                        <XAxis dataKey="name" stroke="#9ca3af"/>
+                                        <YAxis stroke="#9ca3af"/>
+                                        <Tooltip contentStyle={{ backgroundColor: '#141414', border: '1px solid #333', color: '#F3F4F6' }}/>
+                                        <Legend wrapperStyle={{ color: '#E5E7EB' }} />
+                                        <Bar dataKey="On Track" stackId="a" fill={STATUS_COLORS['On Track']} />
+                                        <Bar dataKey="At Risk" stackId="a" fill={STATUS_COLORS['At Risk']} />
+                                        <Bar dataKey="Off Track" stackId="a" fill={STATUS_COLORS['Off Track']} />
+                                        <Bar dataKey="Achieved" stackId="a" fill={STATUS_COLORS['Achieved']} />
+                                    </BarChart>
+                                </ResponsiveContainer>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </aside>
+        </>
+    );
+}
+
+const SuccessMetricsPage = ({ db, userId, project }) => {
+    const [metrics, setMetrics] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [isModalOpen, setIsModalOpen] = useState(false);
+    const [editingMetric, setEditingMetric] = useState(null);
+    const [isAnalysisPanelOpen, setIsAnalysisPanelOpen] = useState(false);
+
+    useEffect(() => {
+        if (!project?.id) return;
+        setLoading(true);
+        const metricsRef = collection(db, `artifacts/${appId}/users/${userId}/projects/${project.id}/successMetrics`);
+        const unsub = onSnapshot(metricsRef, snapshot => {
+            setMetrics(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+            setLoading(false);
+        });
+        return () => unsub();
+    }, [db, userId, project?.id]);
+    
+    const handleEdit = (metric) => { setEditingMetric(metric); setIsModalOpen(true); };
+    const handleDelete = async (metricId) => { if(confirm("Are you sure?")) { await deleteDoc(doc(db, `artifacts/${appId}/users/${userId}/projects/${project.id}/successMetrics`, metricId)); }};
+
+    return (
+        <div className="h-full">
+            <main className="flex-1 p-8 overflow-y-auto h-full">
+                <div className="flex justify-between items-center mb-6">
+                     <h2 className="font-jakarta text-3xl font-bold text-white">Success Metrics</h2>
+                     <div className="flex items-center gap-4">
+                        <button onClick={() => setIsAnalysisPanelOpen(true)} className="flex items-center gap-2 px-4 py-2 bg-[#1F1F1F] border border-[#333] text-white font-jakarta font-bold rounded-md hover:bg-[#333] transition-all duration-300">
+                             <ICONS.PanelRight className="w-5 h-5" /> Performance
+                         </button>
+                        <button onClick={() => { setEditingMetric(null); setIsModalOpen(true); }} className="flex items-center gap-2 px-4 py-2 bg-[#B38B59] text-white font-jakarta font-bold rounded-md hover:bg-[#a17c50] transition-all duration-300 transform hover:-translate-y-0.5"><ICONS.Plus className="w-5 h-5" /> Add Metric</button>
+                    </div>
+                </div>
+                 <div className="bg-[#1F1F1F] border border-[#333] rounded-lg shadow-2xl overflow-hidden">
+                    {loading ? <LoadingSpinner/> : (
+                         <table className="w-full text-left">
+                            <thead className="bg-[#141414]"><tr>{['Metric', 'Category', 'Target', 'Current', 'Status', 'Data Source', 'Actions'].map(h => (<th key={h} className="p-4 font-jakarta font-bold text-[#B38B59] uppercase text-sm tracking-wider">{h}</th>))}</tr></thead>
+                            <tbody className="divide-y divide-[#333]">
+                                {metrics.map(m => (
+                                    <tr key={m.id} className="hover:bg-[#141414]">
+                                        <td className="p-4 text-white w-1/3">{m.metric}</td>
+                                        <td className="p-4 text-gray-400">{m.category}</td>
+                                        <td className="p-4 text-gray-400">{m.target}</td>
+                                        <td className="p-4 text-gray-400">{m.current}</td>
+                                        <td className="p-4 text-gray-400">{m.status}</td>
+                                        <td className="p-4 text-gray-400">{m.dataSource}</td>
+                                        <td className="p-4"><div className="flex gap-4"><button onClick={() => handleEdit(m)}><ICONS.Edit className="w-5 h-5 text-gray-400 hover:text-[#B38B59]"/></button><button onClick={() => handleDelete(m.id)}><ICONS.Trash className="w-5 h-5 text-gray-400 hover:text-[#902828]"/></button></div></td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    )}
+                </div>
+            </main>
+            <SuccessMetricsAnalysis metrics={metrics} isCollapsed={!isAnalysisPanelOpen} onToggle={() => setIsAnalysisPanelOpen(false)} />
+            <SuccessMetricModal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} db={db} userId={userId} project={project} editingMetric={editingMetric} />
+        </div>
+    );
+};
+
+
+// --- Capability Components ---
+const CapabilityAnalysisPanel = ({ assessments, isCollapsed, onToggle, onSuggestTraining }) => {
+    const [selectedCapability, setSelectedCapability] = useState(null);
+    const [isGenerating, setIsGenerating] = useState(false);
+
+    const gapData = useMemo(() => {
+        const gaps = assessments.reduce((acc, curr) => {
+            const gap = (curr.target || 0) - (curr.current || 0);
+            if(gap > 0){
+                if (!acc[curr.capability] || gap > acc[curr.capability].gap) {
+                    acc[curr.capability] = { gap, group: curr.group };
+                }
+            }
+            return acc;
+        }, {});
+        return Object.keys(gaps).map(key => ({ capability: key, gap: gaps[key].gap, group: gaps[key].group })).sort((a,b) => b.gap - a.gap);
+    }, [assessments]);
+
+    const readinessData = useMemo(() => {
+        const groups = {};
+        assessments.forEach(a => {
+            if(!groups[a.group]) groups[a.group] = { totalGap: 0, count: 0 };
+            groups[a.group].totalGap += (a.target || 0) - (a.current || 0);
+            groups[a.group].count++;
+        });
+        return Object.keys(groups).map(key => ({ group: key, avgGap: groups[key].totalGap / groups[key].count }));
+    }, [assessments]);
+    
+    const handleSuggestClick = async () => {
+        if (!selectedCapability) return;
+        setIsGenerating(true);
+        await onSuggestTraining(selectedCapability);
+        setIsGenerating(false);
+    };
+
+    const getReadinessColor = (avgGap) => {
+        if (avgGap <= 0) return 'bg-green-500';
+        if (avgGap <= 1) return 'bg-yellow-500';
+        return 'bg-red-500';
+    };
+
+    return (
+        <>
+            <div className={`fixed inset-0 bg-black/60 z-40 transition-opacity ${!isCollapsed ? 'opacity-100' : 'opacity-0 pointer-events-none'}`} onClick={onToggle}></div>
+            <aside className={`fixed top-0 right-0 h-full w-full max-w-2xl bg-[#1F1F1F] border-l border-[#333] z-50 transition-transform duration-300 ease-in-out ${!isCollapsed ? 'translate-x-0' : 'translate-x-full'}`}>
+                <div className="flex flex-col h-full">
+                    <div className="p-6 flex justify-between items-center border-b border-[#333]">
+                        <h3 className="font-jakarta text-xl font-bold text-[#B38B59] mb-0 whitespace-nowrap">Analysis Panel</h3>
+                        <button onClick={onToggle} className="text-gray-400 hover:text-white"><ICONS.X className="w-6 h-6"/></button>
+                    </div>
+                    <div className="overflow-y-auto p-6">
+                        <div className="flex flex-col gap-8">
+                             <div>
+                                <h4 className="font-jakarta text-lg text-white mb-4">Top Capability Gaps</h4>
+                                 <ResponsiveContainer width="100%" height={300}>
+                                    <BarChart data={gapData} layout="vertical" margin={{ top: 5, right: 20, left: 120, bottom: 5 }}>
+                                        <CartesianGrid stroke="#333" strokeDasharray="3 3"/><XAxis type="number" stroke="#9ca3af" domain={[0, 5]} ticks={[1,2,3,4,5]}/><YAxis type="category" dataKey="capability" stroke="#9ca3af" width={120} tick={{ fontSize: 12 }}/>
+                                        <Tooltip contentStyle={{ backgroundColor: '#141414', border: '1px solid #333', color: '#F3F4F6' }}/>
+                                        <Bar dataKey="gap" name="Proficiency Gap" fill="#B38B59" onClick={(data) => setSelectedCapability(data)} cursor="pointer"/>
+                                    </BarChart>
+                                </ResponsiveContainer>
+                            </div>
+                             <div>
+                                 <h4 className="font-jakarta text-lg text-white mb-4">Group Readiness Heatmap</h4>
+                                 <div className="space-y-2">
+                                     {readinessData.map(item => (
+                                         <div key={item.group} className="flex items-center justify-between p-2 bg-[#141414] rounded">
+                                             <span className="text-white">{item.group}</span>
+                                             <div className={`w-24 h-6 rounded ${getReadinessColor(item.avgGap)} flex items-center justify-center text-xs font-bold text-white`}>
+                                                 {item.avgGap > 0 ? `Gap: ${item.avgGap.toFixed(1)}` : 'Ready'}
+                                             </div>
+                                         </div>
+                                     ))}
+                                 </div>
+                            </div>
+                            {selectedCapability && (
+                                <div className="p-4 bg-[#141414] rounded-lg border border-[#333]">
+                                     <h4 className="font-jakarta text-lg text-white mb-2">Training Recommendation</h4>
+                                     <p className="text-sm text-gray-400 mb-4">Generate an AI-powered training plan for the <span className="font-bold text-[#B38B59]">{selectedCapability.capability}</span> gap for the <span className="font-bold text-[#B38B59]">{selectedCapability.group}</span>.</p>
+                                     <button onClick={handleSuggestClick} disabled={isGenerating} className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-[#B38B59] text-white font-jakarta font-bold rounded-md hover:bg-[#a17c50] disabled:opacity-50">
+                                        {isGenerating ? <LoadingSpinner small/> : <ICONS.Sparkles className="w-5 h-5" />}
+                                        ✨ Suggest Training Plan
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            </aside>
+        </>
+    );
+};
+
+
+const CapabilityPage = ({ db, userId, project }) => {
+    const [assessments, setAssessments] = useState([]);
+    const [impactedGroups, setImpactedGroups] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [editingCell, setEditingCell] = useState(null);
+    const [isAnalysisPanelOpen, setIsAnalysisPanelOpen] = useState(false);
+
+    const capabilities = project?.capabilities || [];
+
+    useEffect(() => {
+        if (!project?.id) return;
+        setLoading(true);
+        const assessRef = collection(db, `artifacts/${appId}/users/${userId}/projects/${project.id}/capabilities`);
+        const unsubAssess = onSnapshot(assessRef, snapshot => { setAssessments(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }))); setLoading(false); });
+        
+        const impactsRef = collection(db, `artifacts/${appId}/users/${userId}/projects/${project.id}/impacts`);
+        const unsubImpacts = onSnapshot(impactsRef, snapshot => {
+            const groups = [...new Set(snapshot.docs.map(doc => doc.data().group))];
+            setImpactedGroups(groups);
+        });
+
+        return () => { unsubAssess(); unsubImpacts(); };
+    }, [db, userId, project?.id]);
+
+    const handleCellChange = async (group, capability, field, value) => {
+        const existing = assessments.find(a => a.group === group && a.capability === capability);
+        const val = parseInt(value) || 0;
+        if (existing) {
+            await updateDoc(doc(db, `artifacts/${appId}/users/${userId}/projects/${project.id}/capabilities`, existing.id), { [field]: val });
+        } else {
+            await addDoc(collection(db, `artifacts/${appId}/users/${userId}/projects/${project.id}/capabilities`), { group, capability, [field]: val, current: field === 'target' ? 0 : val, target: field === 'current' ? 0 : val });
+        }
+        setEditingCell(null);
+    };
+    
+    const handleSuggestTraining = async (capabilityGap) => {
+        const { capability, group, gap } = capabilityGap;
+        const prompt = `You are a corporate training expert. For a project, the "${group}" needs to improve their "${capability}" skill. Their current proficiency gap is ${gap} out of 5. Suggest a concise training plan with a "Topic", "Format" (e.g., Workshop, E-learning), and brief, bulleted "Learning Objectives".`;
+        const suggestion = await callGeminiAPI(prompt);
+        alert(`AI Suggestion for ${group} - ${capability}:\n\n${suggestion}`);
+    };
+
+    const getAssessmentValue = (group, capability) => {
+        const assessment = assessments.find(a => a.group === group && a.capability === capability);
+        return { current: assessment?.current || 0, target: assessment?.target || 0 };
+    };
+
+    return (
+        <div className="h-full">
+            <main className="flex-1 p-8 overflow-y-auto h-full">
+                <div className="flex justify-between items-center mb-6">
+                    <h2 className="font-jakarta text-3xl font-bold text-white">Capability Gap Analysis</h2>
+                     <button onClick={() => setIsAnalysisPanelOpen(true)} className="flex items-center gap-2 px-4 py-2 bg-[#1F1F1F] border border-[#333] text-white font-jakarta font-bold rounded-md hover:bg-[#333] transition-all duration-300">
+                         <ICONS.PanelRight className="w-5 h-5" /> Analysis
+                     </button>
+                </div>
+                 <div className="bg-[#1F1F1F] border border-[#333] rounded-lg shadow-2xl overflow-x-auto">
+                   {loading ? <LoadingSpinner/> : (
+                        <table className="w-full text-left border-collapse">
+                            <thead className="bg-[#141414]">
+                                <tr>
+                                    <th className="p-4 font-jakarta font-bold text-[#B38B59] uppercase text-sm tracking-wider sticky left-0 bg-[#141414]">Impacted Group</th>
+                                    {capabilities.map(cap => (
+                                        <th key={cap} className="p-4 font-jakarta font-bold text-[#B38B59] uppercase text-sm tracking-wider text-center min-w-[200px]">{cap}</th>
+                                    ))}
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-[#333]">
+                                {impactedGroups.map(group => (
+                                    <tr key={group} className="hover:bg-[#141414]">
+                                        <td className="p-4 text-white font-bold sticky left-0 bg-[#1F1F1F] hover:bg-[#141414]">{group}</td>
+                                        {capabilities.map(cap => {
+                                            const { current, target } = getAssessmentValue(group, cap);
+                                            const isEditingCurrent = editingCell?.group === group && editingCell?.capability === cap && editingCell?.field === 'current';
+                                            const isEditingTarget = editingCell?.group === group && editingCell?.capability === cap && editingCell?.field === 'target';
+                                            return (
+                                                <td key={cap} className="p-4 text-center">
+                                                    <div className="flex items-center justify-center gap-2">
+                                                        {isEditingCurrent ? (
+                                                            <input type="number" defaultValue={current} onBlur={(e) => handleCellChange(group, cap, 'current', e.target.value)} autoFocus className="w-16 p-1 bg-[#141414] border border-[#B38B59] rounded" />
+                                                        ) : (
+                                                            <span onClick={() => setEditingCell({group, capability: cap, field: 'current'})} className="cursor-pointer w-16 p-1 rounded hover:bg-[#333] text-gray-300">{current} / 5</span>
+                                                        )}
+                                                        <span className="text-gray-500">→</span>
+                                                         {isEditingTarget ? (
+                                                            <input type="number" defaultValue={target} onBlur={(e) => handleCellChange(group, cap, 'target', e.target.value)} autoFocus className="w-16 p-1 bg-[#141414] border border-[#B38B59] rounded" />
+                                                        ) : (
+                                                            <span onClick={() => setEditingCell({group, capability: cap, field: 'target'})} className="cursor-pointer w-16 p-1 rounded hover:bg-[#333] font-bold text-[#B38B59]">{target} / 5</span>
+                                                        )}
+                                                    </div>
+                                                </td>
+                                            )
+                                        })}
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                   )}
+                 </div>
+            </main>
+            <CapabilityAnalysisPanel assessments={assessments} isCollapsed={!isAnalysisPanelOpen} onToggle={()=> setIsAnalysisPanelOpen(false)} onSuggestTraining={handleSuggestTraining} />
+        </div>
+    );
+};
+
+
+// --- Impact Analysis Components ---
+const ImpactModal = ({ isOpen, onClose, db, userId, project, editingImpact }) => {
+    const [formData, setFormData] = useState({});
+    const [isGenerating, setIsGenerating] = useState(false);
+
+    useEffect(() => {
+        if (editingImpact) {
+            setFormData(editingImpact);
+        } else {
+            setFormData({ group: '', process: '', description: '', impactLevel: 3, impactType: 'Process' });
+        }
+    }, [editingImpact, isOpen]);
+    
+    const handleChange = (e) => {
+        const { name, value } = e.target;
+        setFormData(prev => ({ ...prev, [name]: name === 'impactLevel' ? parseInt(value) : value }));
+    };
+
+    const handleSuggestDescription = async () => {
+        if (!formData.group || !formData.process) {
+            alert("Please provide the Impacted Group and Process first.");
+            return;
+        }
+        setIsGenerating(true);
+        const prompt = `For a change management project called "${project.name}", describe the impact on the "${formData.group}" group regarding the "${formData.process}" process. Provide a concise description in a "From: [Old Way] To: [New Way]" format.`;
+        const suggestion = await callGeminiAPI(prompt);
+        setFormData(prev => ({ ...prev, description: suggestion }));
+        setIsGenerating(false);
+    };
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        const collectionRef = collection(db, `artifacts/${appId}/users/${userId}/projects/${project.id}/impacts`);
+        if (formData.id) {
+            await updateDoc(doc(collectionRef, formData.id), formData);
+        } else {
+            await addDoc(collectionRef, { ...formData, createdAt: serverTimestamp() });
+        }
+        onClose();
+    };
+
+    if (!isOpen) return null;
+    return (
+        <div className="fixed inset-0 bg-black bg-opacity-70 flex justify-center items-center z-50">
+            <div className="bg-[#1F1F1F] border border-[#333] p-8 rounded-lg shadow-2xl w-full max-w-lg m-4">
+                <h3 className="font-jakarta text-2xl font-bold text-[#B38B59] mb-6">{formData.id ? 'Edit' : 'Add'} Impact</h3>
+                <form onSubmit={handleSubmit} className="space-y-4">
+                    <input type="text" name="group" value={formData.group || ''} onChange={handleChange} placeholder="Impacted Group/Role (e.g., Sales Team)" required className="w-full p-2 border border-[#333] rounded-md bg-[#141414] text-[#F3F4F6]"/>
+                    <input type="text" name="process" value={formData.process || ''} onChange={handleChange} placeholder="Impacted Process/System (e.g., Lead Management)" required className="w-full p-2 border border-[#333] rounded-md bg-[#141414] text-[#F3F4F6]"/>
+                    <div>
+                         <div className="flex justify-between items-center mb-1">
+                            <label className="block text-sm font-medium text-gray-400">Description of Change</label>
+                            <button type="button" onClick={handleSuggestDescription} disabled={isGenerating} className="flex items-center gap-2 text-sm text-[#B38B59] hover:text-[#a17c50] disabled:opacity-50">
+                                {isGenerating ? <LoadingSpinner small/> : <ICONS.Sparkles className="w-4 h-4" />}
+                                ✨ Suggest Description
+                            </button>
+                        </div>
+                        <textarea name="description" value={formData.description || ''} onChange={handleChange} placeholder="From: ... To: ..." required className="w-full p-2 border border-[#333] rounded-md bg-[#141414] text-[#F3F4F6] min-h-[100px]"></textarea>
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-gray-400 mb-1">Impact Level (1-5)</label>
+                        <input type="range" name="impactLevel" min="1" max="5" value={formData.impactLevel || 3} onChange={handleChange} className="w-full"/>
+                    </div>
+                    <select name="impactType" value={formData.impactType || 'Process'} onChange={handleChange} className="w-full p-2 border border-[#333] rounded-md bg-[#141414] text-[#F3F4F6]">
+                        <option>Process</option><option>Technology</option><option>Role</option><option>Culture</option>
+                    </select>
+                    <div className="flex justify-end gap-4 pt-4">
+                        <button type="button" onClick={onClose} className="px-6 py-2 bg-[#333] text-white font-jakarta font-bold rounded-md hover:bg-[#444]">Cancel</button>
+                        <button type="submit" className="px-6 py-2 bg-[#B38B59] text-white font-jakarta font-bold rounded-md hover:bg-[#a17c50]">Save</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    );
+};
+
+const ImpactAnalysisPanel = ({ impacts, stakeholders, isCollapsed, onToggle }) => {
+    const [selectedGroup, setSelectedGroup] = useState(null);
+    const BRAND_COLORS = { Supportive: "#22c55e", Neutral: "#eab308", Resistant: "#ef4444", default: "#B38B59" };
+    const TYPE_COLORS = { Process: '#B38B59', Technology: '#6b7280', Role: '#902828', Culture: '#a1a1aa' };
+
+    const heatmapData = useMemo(() => {
+        const groupImpacts = impacts.reduce((acc, impact) => {
+            acc[impact.group] = (acc[impact.group] || 0) + impact.impactLevel;
+            return acc;
+        }, {});
+        return Object.keys(groupImpacts).map(key => ({ group: key, totalImpact: groupImpacts[key] })).sort((a,b) => b.totalImpact - a.totalImpact);
+    }, [impacts]);
+
+    const typeDistributionData = useMemo(() => {
+        const typeCounts = impacts.reduce((acc, impact) => {
+            acc[impact.impactType] = (acc[impact.impactType] || 0) + 1;
+            return acc;
+        }, {});
+        return Object.keys(typeCounts).map(key => ({ name: key, value: typeCounts[key] }));
+    }, [impacts]);
+
+    const crossReferenceData = useMemo(() => {
+        if (!selectedGroup) return [];
+        return stakeholders.filter(s => s.role.includes(selectedGroup.replace(' Team', '').replace(' Leadership', '')));
+    }, [selectedGroup, stakeholders]);
+
+    return (
+        <>
+            <div className={`fixed inset-0 bg-black/60 z-40 transition-opacity ${!isCollapsed ? 'opacity-100' : 'opacity-0 pointer-events-none'}`} onClick={onToggle}></div>
+            <aside className={`fixed top-0 right-0 h-full w-full max-w-2xl bg-[#1F1F1F] border-l border-[#333] z-50 transition-transform duration-300 ease-in-out ${!isCollapsed ? 'translate-x-0' : 'translate-x-full'}`}>
+                <div className="flex flex-col h-full">
+                     <div className="p-6 flex justify-between items-center border-b border-[#333]">
+                        <h3 className="font-jakarta text-xl font-bold text-[#B38B59] mb-0 whitespace-nowrap">Analysis Panel</h3>
+                        <button onClick={onToggle} className="text-gray-400 hover:text-white"><ICONS.X className="w-6 h-6"/></button>
+                    </div>
+                    <div className="overflow-y-auto p-6">
+                        <div className="flex flex-col gap-8">
+                            <div>
+                                <h4 className="font-jakarta text-lg text-white mb-4">Impact Level Heatmap</h4>
+                                <ResponsiveContainer width="100%" height={300}>
+                                    <BarChart data={heatmapData} layout="vertical" margin={{ top: 5, right: 20, left: 100, bottom: 5 }}>
+                                        <CartesianGrid stroke="#333" strokeDasharray="3 3"/><XAxis type="number" stroke="#9ca3af" /><YAxis type="category" dataKey="group" stroke="#9ca3af" width={100} tick={{ fontSize: 12 }}/>
+                                        <Tooltip contentStyle={{ backgroundColor: '#141414', border: '1px solid #333', color: '#F3F4F6' }}/>
+                                        <Bar dataKey="totalImpact" name="Total Impact Score" fill="#B38B59" onClick={(data) => setSelectedGroup(data.group)} cursor="pointer"/>
+                                    </BarChart>
+                                </ResponsiveContainer>
+                            </div>
+                             <div>
+                                <h4 className="font-jakarta text-lg text-white mb-4">Impact Type Distribution</h4>
+                                <ResponsiveContainer width="100%" height={250}>
+                                    <PieChart>
+                                        <Pie data={typeDistributionData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80} label>
+                                            {typeDistributionData.map((entry, index) => (
+                                                <Cell key={`cell-${index}`} fill={TYPE_COLORS[entry.name] || '#6b7280'} />
+                                            ))}
+                                        </Pie>
+                                        <Tooltip contentStyle={{ backgroundColor: '#141414', border: '1px solid #333', color: '#F3F4F6' }}/>
+                                        <Legend wrapperStyle={{ color: '#E5E7EB' }} />
+                                    </PieChart>
+                                </ResponsiveContainer>
+                            </div>
+                            {selectedGroup && (
+                                <div>
+                                    <h4 className="font-jakarta text-lg text-white mb-4">Stakeholders in '{selectedGroup}'</h4>
+                                    <ul className="space-y-2">
+                                        {crossReferenceData.length > 0 ? crossReferenceData.map(s => (
+                                            <li key={s.id} className="p-2 bg-[#141414] rounded-md flex justify-between items-center text-sm">
+                                                <span className="text-white">{s.name} ({s.role})</span>
+                                                <span style={{ color: BRAND_COLORS[s.engagement] }}>{s.engagement}</span>
+                                            </li>
+                                        )) : <p className="text-gray-400 text-sm">No stakeholders found for this group.</p>}
+                                    </ul>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            </aside>
+        </>
+    );
+};
+
+
+const ImpactAnalysisPage = ({ db, userId, project }) => {
+    const [impacts, setImpacts] = useState([]);
+    const [stakeholders, setStakeholders] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [isModalOpen, setIsModalOpen] = useState(false);
+    const [editingImpact, setEditingImpact] = useState(null);
+    const [isAnalysisPanelOpen, setIsAnalysisPanelOpen] = useState(false);
+
+    useEffect(() => {
+        if (!project?.id) return;
+        setLoading(true);
+        const impactsRef = collection(db, `artifacts/${appId}/users/${userId}/projects/${project.id}/impacts`);
+        const unsubImpacts = onSnapshot(impactsRef, snapshot => { setImpacts(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }))); setLoading(false); });
+        const stakeholdersRef = collection(db, `artifacts/${appId}/users/${userId}/projects/${project.id}/stakeholders`);
+        const unsubStakeholders = onSnapshot(stakeholdersRef, snapshot => { setStakeholders(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }))); });
+        return () => { unsubImpacts(); unsubStakeholders(); };
+    }, [db, userId, project?.id]);
+
+    const handleEdit = (impact) => { setEditingImpact(impact); setIsModalOpen(true); };
+    const handleDelete = async (impactId) => { if (confirm("Are you sure?")) { await deleteDoc(doc(db, `artifacts/${appId}/users/${userId}/projects/${project.id}/impacts`, impactId)); } };
+
+    return (
+        <div className="h-full">
+            <main className="flex-1 p-8 overflow-y-auto h-full">
+                <div className="flex justify-between items-center mb-6">
+                    <h2 className="font-jakarta text-3xl font-bold text-white">Impact Analysis</h2>
+                    <div className="flex items-center gap-4">
+                        <button onClick={() => setIsAnalysisPanelOpen(true)} className="flex items-center gap-2 px-4 py-2 bg-[#1F1F1F] border border-[#333] text-white font-jakarta font-bold rounded-md hover:bg-[#333] transition-all duration-300">
+                             <ICONS.PanelRight className="w-5 h-5" /> Analysis
+                         </button>
+                        <button onClick={() => { setEditingImpact(null); setIsModalOpen(true); }} className="flex items-center gap-2 px-4 py-2 bg-[#B38B59] text-white font-jakarta font-bold rounded-md hover:bg-[#a17c50] transition-all duration-300 transform hover:-translate-y-0.5"><ICONS.Plus className="w-5 h-5" /> Add Impact</button>
+                    </div>
+                </div>
+                <div className="bg-[#1F1F1F] border border-[#333] rounded-lg shadow-2xl overflow-hidden">
+                    {loading ? <LoadingSpinner/> : (
+                        <table className="w-full text-left">
+                            <thead className="bg-[#141414]"><tr>{['Impacted Group', 'Process/System', 'Description', 'Level', 'Type', 'Actions'].map(h => (<th key={h} className="p-4 font-jakarta font-bold text-[#B38B59] uppercase text-sm tracking-wider">{h}</th>))}</tr></thead>
+                            <tbody className="divide-y divide-[#333]">
+                                {impacts.map(i => (
+                                    <tr key={i.id} className="hover:bg-[#141414]">
+                                        <td className="p-4 text-white">{i.group}</td><td className="p-4 text-gray-400">{i.process}</td><td className="p-4 text-gray-400 w-1/3">{i.description}</td><td className="p-4 text-gray-400">{i.impactLevel}</td><td className="p-4 text-gray-400">{i.impactType}</td>
+                                        <td className="p-4"><div className="flex gap-4"><button onClick={() => handleEdit(i)}><ICONS.Edit className="w-5 h-5 text-gray-400 hover:text-[#B38B59]"/></button><button onClick={() => handleDelete(i.id)}><ICONS.Trash className="w-5 h-5 text-gray-400 hover:text-[#902828]"/></button></div></td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    )}
+                </div>
+            </main>
+            <ImpactAnalysisPanel impacts={impacts} stakeholders={stakeholders} isCollapsed={!isAnalysisPanelOpen} onToggle={() => setIsAnalysisPanelOpen(false)}/>
+            <ImpactModal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} db={db} userId={userId} project={project} editingImpact={editingImpact} />
+        </div>
+    );
+};
+
+
+// --- Risk Management Components ---
+const RiskModal = ({ isOpen, onClose, db, userId, project, editingRisk }) => {
+    const [formData, setFormData] = useState({});
+    const [isGenerating, setIsGenerating] = useState(false);
+
+    useEffect(() => {
+        if (editingRisk) {
+            setFormData(editingRisk);
+        } else {
+            setFormData({ description: '', likelihood: 3, impact: 3, mitigationPlan: '' });
+        }
+    }, [editingRisk, isOpen]);
+
+    const handleChange = (e) => {
+        const { name, value } = e.target;
+        setFormData(prev => ({ ...prev, [name]: name === 'likelihood' || name === 'impact' ? parseInt(value) : value }));
+    };
+
+    const handleSuggestMitigation = async () => {
+        if (!formData.description) {
+            alert("Please provide a risk description first.");
+            return;
+        }
+        setIsGenerating(true);
+        const prompt = `You are a senior project manager specializing in risk mitigation. For a project, we have identified the following risk: "${formData.description}". The likelihood of this risk occurring is ${formData.likelihood}/5 and the potential impact is ${formData.impact}/5. Provide a concise, actionable mitigation plan in one or two sentences.`;
+        const suggestion = await callGeminiAPI(prompt);
+        setFormData(prev => ({ ...prev, mitigationPlan: suggestion }));
+        setIsGenerating(false);
+    };
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        const collectionRef = collection(db, `artifacts/${appId}/users/${userId}/projects/${project.id}/risks`);
+        if (formData.id) {
+            await updateDoc(doc(collectionRef, formData.id), formData);
+        } else {
+            await addDoc(collectionRef, { ...formData, createdAt: serverTimestamp() });
+        }
+        onClose();
+    };
+
+    if (!isOpen) return null;
+    return (
+        <div className="fixed inset-0 bg-black bg-opacity-70 flex justify-center items-center z-50">
+            <div className="bg-[#1F1F1F] border border-[#333] p-8 rounded-lg shadow-2xl w-full max-w-lg m-4">
+                <h3 className="font-jakarta text-2xl font-bold text-[#B38B59] mb-6">{formData.id ? 'Edit' : 'Add'} Risk</h3>
+                <form onSubmit={handleSubmit} className="space-y-4">
+                    <textarea name="description" value={formData.description || ''} onChange={handleChange} placeholder="Risk Description" required className="w-full p-2 border border-[#333] rounded-md bg-[#141414] text-[#F3F4F6] min-h-[80px]"></textarea>
+                    <div className="grid grid-cols-2 gap-4">
+                        <div><label className="block text-sm font-medium text-gray-400 mb-1">Likelihood (1-5)</label><input type="range" name="likelihood" min="1" max="5" value={formData.likelihood || 3} onChange={handleChange} className="w-full"/></div>
+                        <div><label className="block text-sm font-medium text-gray-400 mb-1">Impact (1-5)</label><input type="range" name="impact" min="1" max="5" value={formData.impact || 3} onChange={handleChange} className="w-full"/></div>
+                    </div>
+                    <div>
+                        <div className="flex justify-between items-center mb-1">
+                            <label className="block text-sm font-medium text-gray-400">Mitigation Plan</label>
+                            <button type="button" onClick={handleSuggestMitigation} disabled={isGenerating} className="flex items-center gap-2 text-sm text-[#B38B59] hover:text-[#a17c50] disabled:opacity-50">
+                                {isGenerating ? <LoadingSpinner small /> : <ICONS.Sparkles className="w-4 h-4" />}
+                                ✨ Suggest Mitigation
+                            </button>
+                        </div>
+                        <textarea name="mitigationPlan" value={formData.mitigationPlan || ''} onChange={handleChange} placeholder="Describe the plan to mitigate this risk..." required className="w-full p-2 border border-[#333] rounded-md bg-[#141414] text-[#F3F4F6] min-h-[100px]"></textarea>
+                    </div>
+                    <div className="flex justify-end gap-4 pt-4">
+                        <button type="button" onClick={onClose} className="px-6 py-2 bg-[#333] text-white font-jakarta font-bold rounded-md hover:bg-[#444]">Cancel</button>
+                        <button type="submit" className="px-6 py-2 bg-[#B38B59] text-white font-jakarta font-bold rounded-md hover:bg-[#a17c50]">Save</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    );
+};
+
+const RiskManagementPage = ({ db, userId, project }) => {
+    const [risks, setRisks] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [isModalOpen, setIsModalOpen] = useState(false);
+    const [editingRisk, setEditingRisk] = useState(null);
+
+    useEffect(() => {
+        if (!project?.id) return;
+        setLoading(true);
+        const collectionRef = collection(db, `artifacts/${appId}/users/${userId}/projects/${project.id}/risks`);
+        const unsubscribe = onSnapshot(collectionRef, snapshot => {
+            setRisks(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+            setLoading(false);
+        });
+        return () => unsubscribe();
+    }, [db, userId, project?.id]);
+
+    const handleEdit = (risk) => {
+        setEditingRisk(risk);
+        setIsModalOpen(true);
+    };
+
+    const handleDelete = async (riskId) => {
+        if (confirm("Are you sure?")) {
+            await deleteDoc(doc(db, `artifacts/${appId}/users/${userId}/projects/${project.id}/risks`, riskId));
+        }
+    };
+
+    return (
+        <div className="p-8">
+            <div className="flex justify-between items-center mb-6">
+                <h2 className="font-jakarta text-3xl font-bold text-white">Risk Management</h2>
+                <button onClick={() => { setEditingRisk(null); setIsModalOpen(true); }} className="flex items-center gap-2 px-4 py-2 bg-[#B38B59] text-white font-jakarta font-bold rounded-md hover:bg-[#a17c50] transition-all duration-300 transform hover:-translate-y-0.5">
+                    <ICONS.Plus className="w-5 h-5" /> Add Risk
+                </button>
+            </div>
+            <div className="bg-[#1F1F1F] border border-[#333] rounded-lg shadow-2xl overflow-hidden">
+                {loading ? <LoadingSpinner /> : (
+                    <table className="w-full text-left">
+                        <thead className="bg-[#141414]">
+                            <tr>
+                                {['Description', 'Likelihood', 'Impact', 'Mitigation Plan', 'Actions'].map(h => (
+                                    <th key={h} className="p-4 font-jakarta font-bold text-[#B38B59] uppercase text-sm tracking-wider">{h}</th>
+                                ))}
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-[#333]">
+                            {risks.map(r => (
+                                <tr key={r.id} className="hover:bg-[#141414]">
+                                    <td className="p-4 text-white w-1/3">{r.description}</td>
+                                    <td className="p-4 text-gray-400">{r.likelihood}</td>
+                                    <td className="p-4 text-gray-400">{r.impact}</td>
+                                    <td className="p-4 text-gray-400 w-1/3">{r.mitigationPlan}</td>
+                                    <td className="p-4">
+                                        <div className="flex gap-4">
+                                            <button onClick={() => handleEdit(r)}><ICONS.Edit className="w-5 h-5 text-gray-400 hover:text-[#B38B59]"/></button>
+                                            <button onClick={() => handleDelete(r.id)}><ICONS.Trash className="w-5 h-5 text-gray-400 hover:text-[#902828]"/></button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                )}
+            </div>
+            <RiskModal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} db={db} userId={userId} project={project} editingRisk={editingRisk} />
+        </div>
+    );
+};
+
+
+// --- Stakeholder Components ---
+const StakeholderModal = ({ isOpen, onClose, db, userId, project, editingStakeholder }) => {
+    const [formData, setFormData] = useState({});
+    const [isGenerating, setIsGenerating] = useState(false);
+
+    useEffect(() => {
+        if (editingStakeholder) {
+            setFormData(editingStakeholder);
+        } else {
+            setFormData({ name: '', role: '', influence: 3, interest: 3, engagement: 'Neutral', capabilityImpacted: '', engagementStrategy: '' });
+        }
+    }, [editingStakeholder, isOpen]);
+
+    const handleChange = (e) => {
+        const { name, value } = e.target;
+        setFormData(prev => ({ ...prev, [name]: name === 'influence' || name === 'interest' ? parseInt(value) : value }));
+    };
+
+    const handleSuggestStrategy = async () => {
+        if (!formData.role) {
+            alert("Please provide the stakeholder's role first.");
+            return;
+        }
+        setIsGenerating(true);
+        const prompt = `You are an expert change management consultant. A stakeholder for a project is the ${formData.role}. Their influence level is ${formData.influence}/5 and their interest level is ${formData.interest}/5. They are currently ${formData.engagement}. Provide a concise, one-sentence engagement strategy for this person.`;
+        const suggestion = await callGeminiAPI(prompt);
+        setFormData(prev => ({ ...prev, engagementStrategy: suggestion }));
+        setIsGenerating(false);
+    };
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        const collectionRef = collection(db, `artifacts/${appId}/users/${userId}/projects/${project.id}/stakeholders`);
+        if (formData.id) {
+            await updateDoc(doc(collectionRef, formData.id), formData);
+        } else {
+            await addDoc(collectionRef, { ...formData, createdAt: serverTimestamp() });
+        }
+        onClose();
+    };
+
+    if (!isOpen) return null;
+
+    return (
+        <div className="fixed inset-0 bg-black bg-opacity-70 flex justify-center items-center z-50">
+            <div className="bg-[#1F1F1F] border border-[#333] p-8 rounded-lg shadow-2xl w-full max-w-lg m-4">
+                <h3 className="font-jakarta text-2xl font-bold text-[#B38B59] mb-6">{formData.id ? 'Edit' : 'Add'} Stakeholder</h3>
+                <form onSubmit={handleSubmit} className="space-y-4">
+                    <input type="text" name="name" value={formData.name || ''} onChange={handleChange} placeholder="Stakeholder Name" required className="w-full p-2 border border-[#333] rounded-md bg-[#141414] text-[#F3F4F6]"/>
+                    <input type="text" name="role" value={formData.role || ''} onChange={handleChange} placeholder="Role" required className="w-full p-2 border border-[#333] rounded-md bg-[#141414] text-[#F3F4F6]"/>
+                    <div className="grid grid-cols-2 gap-4">
+                        <div><label className="block text-sm font-medium text-gray-400 mb-1">Influence (1-5)</label><input type="range" name="influence" min="1" max="5" value={formData.influence || 3} onChange={handleChange} className="w-full"/></div>
+                        <div><label className="block text-sm font-medium text-gray-400 mb-1">Interest (1-5)</label><input type="range" name="interest" min="1" max="5" value={formData.interest || 3} onChange={handleChange} className="w-full"/></div>
+                    </div>
+                    <select name="engagement" value={formData.engagement || 'Neutral'} onChange={handleChange} className="w-full p-2 border border-[#333] rounded-md bg-[#141414] text-[#F3F4F6]">
+                        <option>Supportive</option><option>Neutral</option><option>Resistant</option>
+                    </select>
+                    <select name="capabilityImpacted" value={formData.capabilityImpacted || ''} onChange={handleChange} className="w-full p-2 border border-[#333] rounded-md bg-[#141414] text-[#F3F4F6]">
+                        <option value="">Select Primary Capability Impacted</option>
+                        {project.capabilities?.map(cap => <option key={cap} value={cap}>{cap}</option>)}
+                    </select>
+                    <div>
+                        <div className="flex justify-between items-center mb-1">
+                            <label className="block text-sm font-medium text-gray-400">Engagement Strategy</label>
+                            <button type="button" onClick={handleSuggestStrategy} disabled={isGenerating} className="flex items-center gap-2 text-sm text-[#B38B59] hover:text-[#a17c50] disabled:opacity-50">
+                                {isGenerating ? <LoadingSpinner small/> : <ICONS.Sparkles className="w-4 h-4" />}
+                                ✨ Suggest Strategy
+                            </button>
+                        </div>
+                        <textarea name="engagementStrategy" value={formData.engagementStrategy || ''} onChange={handleChange} placeholder="Describe the engagement strategy..." className="w-full p-2 border border-[#333] rounded-md bg-[#141414] text-[#F3F4F6] min-h-[80px]"></textarea>
+                    </div>
+                    <div className="flex justify-end gap-4 pt-4">
+                        <button type="button" onClick={onClose} className="px-6 py-2 bg-[#333] text-white font-jakarta font-bold rounded-md hover:bg-[#444]">Cancel</button>
+                        <button type="submit" className="px-6 py-2 bg-[#B38B59] text-white font-jakarta font-bold rounded-md hover:bg-[#a17c50]">Save</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    );
+};
+
+const StakeholderAnalysis = ({ stakeholders, isCollapsed, onToggle }) => {
+    const engagementData = useMemo(() => { const counts = stakeholders.reduce((acc, s) => { acc[s.engagement] = (acc[s.engagement] || 0) + 1; return acc; }, {}); return Object.keys(counts).map(key => ({ name: key, value: counts[key] })); }, [stakeholders]);
+    const capabilityData = useMemo(() => { const counts = stakeholders.reduce((acc, s) => { if (s.capabilityImpacted) { acc[s.capabilityImpacted] = (acc[s.capabilityImpacted] || 0) + 1; } return acc; }, {}); return Object.keys(counts).map(key => ({ name: key, count: counts[key] })).sort((a,b) => b.count - a.count); }, [stakeholders]);
+    const BRAND_COLORS = { Supportive: "#22c55e", Neutral: "#eab308", Resistant: "#ef4444", default: "#B38B59" };
+    
+    return (
+        <>
+            <div className={`fixed inset-0 bg-black/60 z-40 transition-opacity ${!isCollapsed ? 'opacity-100' : 'opacity-0 pointer-events-none'}`} onClick={onToggle}></div>
+            <aside className={`fixed top-0 right-0 h-full w-full max-w-2xl bg-[#1F1F1F] border-l border-[#333] z-50 transition-transform duration-300 ease-in-out ${!isCollapsed ? 'translate-x-0' : 'translate-x-full'}`}>
+                 <div className="flex flex-col h-full">
+                    <div className="p-6 flex justify-between items-center border-b border-[#333]">
+                        <h3 className="font-jakarta text-xl font-bold text-[#B38B59] mb-0 whitespace-nowrap">Analysis Panel</h3>
+                        <button onClick={onToggle} className="text-gray-400 hover:text-white"><ICONS.X className="w-6 h-6"/></button>
+                    </div>
+                    <div className="overflow-y-auto p-6">
+                        <div className="flex flex-col gap-8">
+                            <div>
+                                <h4 className="font-jakarta text-lg text-white mb-4">Stakeholder Heatmap</h4>
+                                <ResponsiveContainer width="100%" height={300}>
+                                    <ScatterChart margin={{ top: 20, right: 20, bottom: 20, left: 20 }}>
+                                        <CartesianGrid stroke="#333" strokeDasharray="3 3"/><XAxis type="number" dataKey="interest" name="Interest" domain={[0, 5.5]} ticks={[1,2,3,4,5]} label={{ value: 'Interest', position: 'insideBottom', offset: -10, fill:'#9ca3af' }} stroke="#9ca3af" /><YAxis type="number" dataKey="influence" name="Influence" domain={[0, 5.5]} ticks={[1,2,3,4,5]} label={{ value: 'Influence', angle: -90, position: 'insideLeft', fill:'#9ca3af' }} stroke="#9ca3af"/><Tooltip cursor={{ strokeDasharray: '3 3' }} contentStyle={{ backgroundColor: '#141414', border: '1px solid #333', color: '#F3F4F6' }} /><Scatter name="Stakeholders" data={stakeholders} fill="#B38B59">{stakeholders.map((entry, index) => (<Cell key={`cell-${index}`} fill={BRAND_COLORS[entry.engagement]} />))}</Scatter>
+                                    </ScatterChart>
+                                </ResponsiveContainer>
+                            </div>
+                            <div>
+                                <h4 className="font-jakarta text-lg text-white mb-4">Engagement Sentiment</h4>
+                                <ResponsiveContainer width="100%" height={250}>
+                                    <PieChart><Pie data={engagementData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80} label>{engagementData.map((entry, index) => (<Cell key={`cell-${index}`} fill={BRAND_COLORS[entry.name]} />))}</Pie><Tooltip contentStyle={{ backgroundColor: '#141414', border: '1px solid #333', color: '#F3F4F6' }}/><Legend wrapperStyle={{ color: '#E5E7EB' }} /></PieChart>
+                                </ResponsiveContainer>
+                            </div>
+                            <div>
+                                <h4 className="font-jakarta text-lg text-white mb-4">Capability Impact Breakdown</h4>
+                                <ResponsiveContainer width="100%" height={300}>
+                                    <BarChart data={capabilityData} layout="vertical" margin={{ top: 5, right: 20, left: 100, bottom: 5 }}><CartesianGrid stroke="#333" strokeDasharray="3 3"/><XAxis type="number" stroke="#9ca3af" /><YAxis type="category" dataKey="name" stroke="#9ca3af" width={100} tick={{ fontSize: 12 }}/><Tooltip contentStyle={{ backgroundColor: '#141414', border: '1px solid #333', color: '#F3F4F6' }}/><Bar dataKey="count" name="Stakeholders Affected" fill="#B38B59" /></BarChart>
+                                </ResponsiveContainer>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </aside>
+        </>
+    );
+}
+
+const StakeholderPage = ({ db, userId, project }) => {
+    const [stakeholders, setStakeholders] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [isModalOpen, setIsModalOpen] = useState(false);
+    const [editingStakeholder, setEditingStakeholder] = useState(null);
+    const [isAnalysisPanelOpen, setIsAnalysisPanelOpen] = useState(false);
+
+    useEffect(() => {
+        if (!project?.id) return;
+        setLoading(true);
+        const collectionRef = collection(db, `artifacts/${appId}/users/${userId}/projects/${project.id}/stakeholders`);
+        const unsubscribe = onSnapshot(collectionRef, snapshot => { setStakeholders(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }))); setLoading(false); });
+        return () => unsubscribe();
+    }, [db, userId, project?.id]);
+
+    const handleEdit = (stakeholder) => { setEditingStakeholder(stakeholder); setIsModalOpen(true); };
+    const handleDelete = async (stakeholderId) => { if (confirm("Are you sure?")) { await deleteDoc(doc(db, `artifacts/${appId}/users/${userId}/projects/${project.id}/stakeholders`, stakeholderId)); } };
+
+    return (
+        <div className="h-full">
+            <main className="p-8 overflow-y-auto h-full">
+                <div className="flex justify-between items-center mb-6">
+                     <h2 className="font-jakarta text-3xl font-bold text-white">Stakeholder Management</h2>
+                      <div className="flex items-center gap-4">
+                        <button onClick={() => setIsAnalysisPanelOpen(true)} className="flex items-center gap-2 px-4 py-2 bg-[#1F1F1F] border border-[#333] text-white font-jakarta font-bold rounded-md hover:bg-[#333] transition-all duration-300">
+                             <ICONS.PanelRight className="w-5 h-5" /> Analysis
+                         </button>
+                         <button onClick={() => { setEditingStakeholder(null); setIsModalOpen(true); }} className="flex items-center gap-2 px-4 py-2 bg-[#B38B59] text-white font-jakarta font-bold rounded-md hover:bg-[#a17c50] transition-all duration-300 transform hover:-translate-y-0.5"><ICONS.Plus className="w-5 h-5" /> Add Stakeholder</button>
+                     </div>
+                </div>
+                <div className="bg-[#1F1F1F] border border-[#333] rounded-lg shadow-2xl overflow-hidden">
+                   {loading ? <LoadingSpinner/> : (
+                       <table className="w-full text-left">
+                           <thead className="bg-[#141414]"><tr>{['Name', 'Role', 'Influence', 'Interest', 'Engagement', 'Strategy', 'Actions'].map(h => (<th key={h} className="p-4 font-jakarta font-bold text-[#B38B59] uppercase text-sm tracking-wider">{h}</th>))}</tr></thead>
+                           <tbody className="divide-y divide-[#333]">
+                               {stakeholders.map(s => (
+                                   <tr key={s.id} className="hover:bg-[#141414]">
+                                       <td className="p-4 text-white">{s.name}</td><td className="p-4 text-gray-400">{s.role}</td><td className="p-4 text-gray-400">{s.influence}</td><td className="p-4 text-gray-400">{s.interest}</td><td className="p-4 text-gray-400">{s.engagement}</td><td className="p-4 text-gray-400 max-w-sm">{s.engagementStrategy}</td>
+                                       <td className="p-4"><div className="flex gap-4"><button onClick={() => handleEdit(s)}><ICONS.Edit className="w-5 h-5 text-gray-400 hover:text-[#B38B59]"/></button><button onClick={() => handleDelete(s.id)}><ICONS.Trash className="w-5 h-5 text-gray-400 hover:text-[#902828]"/></button></div></td>
+                                   </tr>
+                               ))}
+                           </tbody>
+                       </table>
+                   )}
+                </div>
+            </main>
+            <StakeholderAnalysis stakeholders={stakeholders} isCollapsed={!isAnalysisPanelOpen} onToggle={() => setIsAnalysisPanelOpen(false)}/>
+            <StakeholderModal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} db={db} userId={userId} project={project} editingStakeholder={editingStakeholder} />
+        </div>
+    );
+};
+
+
+// --- Admin Page Components ---
+const UserProfile = ({ db, userId, onProfileUpdate }) => {
+    const [name, setName] = useState(''); const [role, setRole] = useState('');
+    const profileRef = useMemo(() => doc(db, `artifacts/${appId}/users/${userId}/profile`, 'main'), [db, userId]);
+    useEffect(() => { getDoc(profileRef).then(docSnap => { if (docSnap.exists()) { const data = docSnap.data(); setName(data.name || ''); setRole(data.role || ''); } }); }, [profileRef]);
+    const handleSave = async () => { await setDoc(profileRef, { name, role }, { merge: true }); onProfileUpdate({ name, role }); alert("Profile updated!"); };
+    return (
+        <div className="bg-[#1F1F1F] border border-[#333] p-6 rounded-lg shadow-2xl mb-8">
+            <h3 className="font-jakarta text-xl font-bold text-[#B38B59] mb-4">User Profile</h3>
+            <div className="space-y-4">
+                <input type="text" placeholder="Your Name" value={name} onChange={e => setName(e.target.value)} className="w-full p-2 border border-[#333] rounded-md bg-[#141414] text-[#F3F4F6] focus:ring-1 focus:ring-[#B38B59] focus:border-[#B38B59]" />
+                <input type="text" placeholder="Your Role (e.g., Change Manager)" value={role} onChange={e => setRole(e.target.value)} className="w-full p-2 border border-[#333] rounded-md bg-[#141414] text-[#F3F4F6] focus:ring-1 focus:ring-[#B38B59] focus:border-[#B38B59]" />
+            </div>
+            <button onClick={handleSave} className="mt-4 px-6 py-2 bg-[#B38B59] text-white font-jakarta font-bold rounded-md hover:bg-[#a17c50] transition-all duration-300 transform hover:-translate-y-0.5">Save Profile</button>
+        </div>
+    );
+};
+
+const WorkspaceManagement = ({ db, userId, customers, projectsByCustomer }) => {
+    const [newCustomerName, setNewCustomerName] = useState(''); const [selectedCustomerId, setSelectedCustomerId] = useState(null); const [newProjectName, setNewProjectName] = useState('');
+    const handleAddCustomer = async () => { if (!newCustomerName.trim()) return; await addDoc(collection(db, `artifacts/${appId}/users/${userId}/customers`), { name: newCustomerName }); setNewCustomerName(''); };
+    const handleDeleteCustomer = async (customerId) => { if (confirm("Are you sure?")) { await deleteDoc(doc(db, `artifacts/${appId}/users/${userId}/customers`, customerId)); } };
+    const handleAddProject = async () => { if (!newProjectName.trim() || !selectedCustomerId) return; await addDoc(collection(db, `artifacts/${appId}/users/${userId}/customers/${selectedCustomerId}/projects`), { name: newProjectName, capabilities: [] }); setNewProjectName(''); };
+    const handleDeleteProject = async (projectId) => { if (confirm("Are you sure?")) { await deleteDoc(doc(db, `artifacts/${appId}/users/${userId}/customers/${selectedCustomerId}/projects`, projectId)); } };
+    return (
+        <div className="bg-[#1F1F1F] border border-[#333] p-6 rounded-lg shadow-2xl mb-8">
+            <h3 className="font-jakarta text-xl font-bold text-[#B38B59] mb-4">Workspace Management</h3>
+            <div className="mb-6">
+                <h4 className="font-jakarta text-lg text-white mb-2">Customers</h4>
+                <div className="flex gap-2 mb-2">
+                    <input type="text" value={newCustomerName} onChange={e => setNewCustomerName(e.target.value)} placeholder="New Customer Name" className="flex-grow p-2 border border-[#333] rounded-md bg-[#141414] text-[#F3F4F6] focus:ring-1 focus:ring-[#B38B59]"/>
+                    <button onClick={handleAddCustomer} className="px-4 py-2 bg-[#B38B59] text-white font-bold rounded-md hover:bg-[#a17c50]">+</button>
+                </div>
+                <ul className="space-y-1 max-h-40 overflow-y-auto">{customers.map(c => (<li key={c.id} onClick={() => setSelectedCustomerId(c.id)} className={`flex justify-between items-center p-2 rounded cursor-pointer ${selectedCustomerId === c.id ? 'bg-[#B38B59] text-white' : 'hover:bg-[#333]'}`}><span>{c.name}</span><button onClick={(e) => {e.stopPropagation(); handleDeleteCustomer(c.id)}} className="text-red-400 hover:text-red-200">Delete</button></li>))}</ul>
+            </div>
+            {selectedCustomerId && (<div><h4 className="font-jakarta text-lg text-white mb-2">Projects for {customers.find(c=>c.id === selectedCustomerId)?.name}</h4><div className="flex gap-2 mb-2"><input type="text" value={newProjectName} onChange={e => setNewProjectName(e.target.value)} placeholder="New Project Name" className="flex-grow p-2 border border-[#333] rounded-md bg-[#141414] text-[#F3F4F6] focus:ring-1 focus:ring-[#B38B59]"/><button onClick={handleAddProject} className="px-4 py-2 bg-[#B38B59] text-white font-bold rounded-md hover:bg-[#a17c50]">+</button></div><ul className="space-y-1 max-h-40 overflow-y-auto">{(projectsByCustomer[selectedCustomerId] || []).map(p => (<li key={p.id} className="flex justify-between items-center p-2 rounded hover:bg-[#333]"><span>{p.name}</span><button onClick={() => handleDeleteProject(p.id)} className="text-red-400 hover:text-red-200">Delete</button></li>))}</ul></div>)}
+        </div>
+    );
+};
+
+const ProjectSettings = ({ db, userId, customers, projectsByCustomer }) => {
+    const [selectedCust, setSelectedCust] = useState(''); const [selectedProj, setSelectedProj] = useState(''); const [capabilities, setCapabilities] = useState([]); const [newCapability, setNewCapability] = useState('');
+    const project = useMemo(() => { if (!selectedProj || !selectedCust) return null; return (projectsByCustomer[selectedCust] || []).find(p => p.id === selectedProj); }, [selectedProj, selectedCust, projectsByCustomer]);
+    useEffect(() => { setCapabilities(project?.capabilities || []); }, [project]);
+    const handleAddCapability = async () => { if (!newCapability.trim() || !project) return; const projectRef = doc(db, `artifacts/${appId}/users/${userId}/customers/${selectedCust}/projects/${selectedProj}`); await updateDoc(projectRef, { capabilities: arrayUnion(newCapability) }); setNewCapability(''); };
+    const handleRemoveCapability = async (capability) => { if (!project) return; const projectRef = doc(db, `artifacts/${appId}/users/${userId}/customers/${selectedCust}/projects/${selectedProj}`); await updateDoc(projectRef, { capabilities: arrayRemove(capability) }); };
+    return (
+        <div className="bg-[#1F1F1F] border border-[#333] p-6 rounded-lg shadow-2xl mb-8">
+             <h3 className="font-jakarta text-xl font-bold text-[#B38B59] mb-4">Project-Specific Settings</h3>
+             <div className="flex gap-4 mb-4">
+                 <select value={selectedCust} onChange={e => {setSelectedCust(e.target.value); setSelectedProj('');}} className="w-full p-2 border border-[#333] rounded-md bg-[#141414] text-[#F3F4F6]"><option value="">Select Customer</option>{customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
+                 <select value={selectedProj} onChange={e => setSelectedProj(e.target.value)} disabled={!selectedCust} className="w-full p-2 border border-[#333] rounded-md bg-[#141414] text-[#F3F4F6]"><option value="">Select Project</option>{(projectsByCustomer[selectedCust] || []).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select>
+             </div>
+             {project && (<div><h4 className="font-jakarta text-lg text-white mb-2">Required Capabilities for {project.name}</h4><div className="flex gap-2 mb-2"><input type="text" value={newCapability} onChange={e => setNewCapability(e.target.value)} placeholder="New Capability" className="flex-grow p-2 border border-[#333] rounded-md bg-[#141414] text-[#F3F4F6]"/><button onClick={handleAddCapability} className="px-4 py-2 bg-[#B38B59] text-white font-bold rounded-md hover:bg-[#a17c50]">+</button></div><ul className="space-y-1 max-h-40 overflow-y-auto">{capabilities.map(cap => (<li key={cap} className="flex justify-between items-center p-2 rounded hover:bg-[#333]"><span>{cap}</span><button onClick={() => handleRemoveCapability(cap)} className="text-red-400 hover:text-red-200">Remove</button></li>))}</ul></div>)}
+        </div>
+    );
+};
+
+const AdminPage = ({ db, userId, onProfileUpdate, customers, projectsByCustomer }) => { return ( <div className="p-8"> <h2 className="font-jakarta text-3xl font-bold text-white mb-6">Admin Settings</h2> <div className="grid grid-cols-1 lg:grid-cols-2 gap-8"> <div> <UserProfile db={db} userId={userId} onProfileUpdate={onProfileUpdate} /> <div className="bg-[#1F1F1F] border border-[#333] p-6 rounded-lg shadow-2xl"> <h3 className="font-jakarta text-xl font-bold text-[#B38B59] mb-4">Data Management</h3> <p className="text-gray-400 mb-6">Load sample data to explore features.</p> <button onClick={() => seedData(db, userId)} className="px-6 py-2 bg-[#B38B59] text-white font-jakarta font-bold rounded-md hover:bg-[#a17c50] transition-all duration-300 transform hover:-translate-y-0.5">Seed Default Data</button> </div> </div> <div> <WorkspaceManagement db={db} userId={userId} customers={customers} projectsByCustomer={projectsByCustomer} /> <ProjectSettings db={db} userId={userId} customers={customers} projectsByCustomer={projectsByCustomer} /> </div> </div> </div> ); };
+
+const PagePlaceholder = ({ title }) => ( <div className="p-8"> <h2 className="font-jakarta text-3xl font-bold mb-6 text-white">{title}</h2> <div className="bg-[#1F1F1F] border border-[#333] p-12 rounded-lg shadow-2xl text-center"> <p className="text-gray-400">This module is under construction.</p> </div> </div> );
+const Sidebar = ({ activePage, setActivePage }) => { return ( <aside className="w-64 bg-[#141414] text-[#F3F4F6] flex flex-col flex-shrink-0 border-r border-[#333]"> <div className="h-16 flex items-center justify-center border-b border-[#333]"> <h1 className="text-3xl font-cormorant tracking-wider">Atelier AI</h1> </div> <nav className="flex-1 px-4 py-4 space-y-2 overflow-y-auto"> {NAV_ITEMS.map(item => { const Icon = ICONS[item.icon]; const isActive = activePage === item.id; return ( <a key={item.id} href="#" onClick={(e) => { e.preventDefault(); setActivePage(item.id); }} className={`flex items-center px-4 py-2.5 text-sm font-jakarta font-medium rounded-md transition-all duration-200 ${ isActive ? 'bg-[#B38B59] text-white' : 'hover:bg-[#1F1F1F] text-gray-300' }`} > <Icon className="w-5 h-5 mr-4" /> {item.title || item.id} </a> ); })} </nav> </aside> ); };
+const Header = ({ customers, projects, selectedCustomer, setSelectedCustomer, selectedProject, setSelectedProject, userName, userRole }) => { return ( <header className="h-16 bg-[#1F1F1F] border-b border-[#333] flex items-center justify-between px-6 flex-shrink-0"> <div className="flex items-center gap-4"> <select value={selectedCustomer || ''} onChange={(e) => setSelectedCustomer(e.target.value)} className="p-2 border border-[#333] rounded-md bg-[#141414] text-[#F3F4F6] max-w-xs focus:ring-1 focus:ring-[#B38B59] focus:border-[#B38B59]"> <option value="" disabled>Select Customer</option> {customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)} </select> <select value={selectedProject || ''} onChange={(e) => setSelectedProject(e.target.value)} disabled={!selectedCustomer} className="p-2 border border-[#333] rounded-md bg-[#141414] text-[#F3F4F6] max-w-xs focus:ring-1 focus:ring-[#B38B59] focus:border-[#B38B59]"> <option value="" disabled>Select Project</option> {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)} </select> </div> <div className="text-right"> <p className="text-sm font-jakarta font-bold text-white">{userName}</p> <p className="text-xs text-gray-400">{userRole}</p> </div> </header> ); };
+
+const ChangeManagementApp = ({ db, userId }) => {
+    const [activePage, setActivePage] = useState('Admin');
+    const [customers, setCustomers] = useState([]); const [projectsByCustomer, setProjectsByCustomer] = useState({});
+    const [selectedCustomer, setSelectedCustomer] = useState(null); const [selectedProject, setSelectedProject] = useState(null);
+    const [profile, setProfile] = useState({ name: `User: ${userId.substring(0, 8)}...`, role: 'Change Manager' });
+
+    useEffect(() => {
+        if (!userId || !db) return;
+        const profileRef = doc(db, `artifacts/${appId}/users/${userId}/profile`, 'main');
+        const unsubProfile = onSnapshot(profileRef, (docSnap) => { if (docSnap.exists()) { setProfile(prev => ({...prev, ...docSnap.data()})); } });
+        const customersRef = collection(db, `artifacts/${appId}/users/${userId}/customers`);
+        const unsubCustomers = onSnapshot(customersRef, (snapshot) => {
+            const customerList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })); setCustomers(customerList);
+            if (!selectedCustomer && customerList.length > 0) { setSelectedCustomer(customerList[0].id); }
+            customerList.forEach(customer => {
+                 const projectsRef = collection(db, `artifacts/${appId}/users/${userId}/customers/${customer.id}/projects`);
+                 onSnapshot(projectsRef, (projSnapshot) => {
+                     const projectList = projSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                     setProjectsByCustomer(prev => ({...prev, [customer.id]: projectList}));
+                 });
+            });
+        });
+        return () => { unsubProfile(); unsubCustomers(); };
+    }, [userId, db, selectedCustomer]);
+
+    const projectsForSelectedCustomer = projectsByCustomer[selectedCustomer] || [];
+    const selectedProjectData = useMemo(() => { return projectsForSelectedCustomer.find(p => p.id === selectedProject); }, [projectsForSelectedCustomer, selectedProject]);
+    const handleProfileUpdate = (newProfile) => { setProfile(prev => ({...prev, ...newProfile})); };
+
+    const renderPage = () => {
+        if (activePage === 'Admin') { return <AdminPage db={db} userId={userId} onProfileUpdate={handleProfileUpdate} customers={customers} projectsByCustomer={projectsByCustomer}/>; }
+        if (!selectedProject) { return ( <div className="p-8 text-center text-gray-400"> <h2 className="font-jakarta text-2xl font-bold text-white">Welcome to Atelier AI</h2> <p className="mt-4">Please select a project to begin.</p> </div> ); }
+        switch (activePage) {
+            case 'Stakeholders': return <StakeholderPage db={db} userId={userId} project={selectedProjectData} />;
+            case 'RiskManagement': return <RiskManagementPage db={db} userId={userId} project={selectedProjectData} />;
+            case 'ImpactAnalysis': return <ImpactAnalysisPage db={db} userId={userId} project={selectedProjectData} />;
+            case 'Capability': return <CapabilityPage db={db} userId={userId} project={selectedProjectData} />;
+            case 'SuccessMetrics': return <SuccessMetricsPage db={db} userId={userId} project={selectedProjectData} />;
+            default: return <PagePlaceholder title={NAV_ITEMS.find(i => i.id === activePage)?.title || activePage} />;
+        }
+    };
+    
+    return (
+        <div className="flex h-screen font-inter">
+            <Sidebar activePage={activePage} setActivePage={setActivePage} />
+            <div className="flex-1 flex flex-col min-w-0">
+                <Header customers={customers} projects={projectsForSelectedCustomer} selectedCustomer={selectedCustomer} setSelectedCustomer={setSelectedCustomer} selectedProject={selectedProject} setSelectedProject={setSelectedProject} userName={profile.name} userRole={profile.role} />
+                <div className="flex-1 flex overflow-hidden">
+                    <main className="flex-1 overflow-y-auto bg-[#141414]">{renderPage()}</main>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+const App = () => {
+    const [db, setDb] = useState(null); const [userId, setUserId] = useState(null); const [authReady, setAuthReady] = useState(false);
+    useEffect(() => {
+        try {
+            const app = initializeApp(firebaseConfig); const auth = getAuth(app); const dbInstance = getFirestore(app); setDb(dbInstance);
+            const unsubscribe = onAuthStateChanged(auth, async (user) => {
+                if (user) { setUserId(user.uid); setAuthReady(true); } 
+                else { try { const token = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null; if (token) { await signInWithCustomToken(auth, token); } else { await signInAnonymously(auth); } } catch (error) { console.error("Auth Error:", error); } }
+            });
+            return () => unsubscribe();
+        } catch (error) { console.error("Firebase init failed:", error); }
+    }, []);
+
+    const GlobalStyles = () => ( <style>{` @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@700&family=Inter:wght@400;500&family=Roboto+Mono:wght@400&family=Plus+Jakarta+Sans:wght@500;700&display=swap'); body { font-family: 'Inter', sans-serif; background-color: #141414; color: #F3F4F6; background-image: url('data:image/svg+xml,%3Csvg width="6" height="6" viewBox="0 0 6 6" xmlns="http://www.w3.org/2000/svg"%3E%3Cg fill="%232a2a2a" fill-opacity="0.4" fill-rule="evenodd"%3E%3Cpath d="M5 0h1L0 6V5zM6 5v1H5z"/%3E%3C/g%3E%3C/svg%3E'); } .font-cormorant { font-family: 'Cormorant Garamond', serif; } .font-jakarta { font-family: 'Plus Jakarta Sans', sans-serif; } .font-mono { font-family: 'Roboto Mono', monospace; } `}</style> );
+    if (!authReady || !db || !userId) { return ( <> <GlobalStyles /> <div className="flex items-center justify-center h-screen"> <div className="text-center"> <LoadingSpinner /> <p className="mt-4 text-lg font-jakarta text-gray-300">Connecting to Workspace...</p> </div> </div> </> ); }
+    return ( <> <GlobalStyles /> <ChangeManagementApp db={db} userId={userId} /> </> );
+};
+
+export default App;
+
