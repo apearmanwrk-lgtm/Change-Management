@@ -1,0 +1,55 @@
+import React, { useRef, useEffect } from 'react';
+import PropTypes from 'prop-types';
+
+function useFocusTrap(isOpen, ref) {
+  useEffect(() => {
+    if (!isOpen || !ref.current) return;
+    const focusable = ref.current.querySelectorAll(
+      'button, [tabindex]:not([tabindex="-1"])'
+    );
+    if (focusable.length) focusable[0].focus();
+    const handleTab = (e) => {
+      if (e.key !== 'Tab') return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    ref.current.addEventListener('keydown', handleTab);
+    return () => ref.current.removeEventListener('keydown', handleTab);
+  }, [isOpen, ref]);
+}
+
+const ConfirmationModal = ({ isOpen, title, message, onConfirm, onCancel }) => {
+  const modalRef = useRef(null);
+  useFocusTrap(isOpen, modalRef);
+
+  if (!isOpen) return null;
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-70 flex justify-center items-center z-50" aria-modal="true" role="dialog">
+      <div className="bg-[#1F1F1F] border border-[#333] p-8 rounded-lg shadow-2xl w-full max-w-md m-4" ref={modalRef}>
+        <h3 className="font-jakarta text-xl font-bold text-[#B38B59] mb-4">{title}</h3>
+        <div className="mb-6 text-white">{message}</div>
+        <div className="flex justify-end gap-4">
+          <button onClick={onCancel} className="px-6 py-2 bg-[#333] text-white rounded-md hover:bg-[#444]">Cancel</button>
+          <button onClick={onConfirm} className="px-6 py-2 bg-[#B38B59] text-white rounded-md hover:bg-[#a17c50]">Confirm</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+ConfirmationModal.propTypes = {
+  isOpen: PropTypes.bool.isRequired,
+  title: PropTypes.string.isRequired,
+  message: PropTypes.string.isRequired,
+  onConfirm: PropTypes.func.isRequired,
+  onCancel: PropTypes.func.isRequired,
+};
+
+export default ConfirmationModal;
