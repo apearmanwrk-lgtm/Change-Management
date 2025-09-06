@@ -1,0 +1,166 @@
+import React, { useState, useEffect, useRef } from 'react';
+import PropTypes from 'prop-types';
+import LoadingSpinner from '../common/LoadingSpinner';
+
+function useFocusTrap(isOpen, ref) {
+  useEffect(() => {
+    if (!isOpen || !ref.current) return;
+    const focusable = ref.current.querySelectorAll(
+      'input, select, textarea, button, [tabindex]:not([tabindex="-1"])'
+    );
+    if (focusable.length) focusable[0].focus();
+    const handleTab = (e) => {
+      if (e.key !== 'Tab') return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    ref.current.addEventListener('keydown', handleTab);
+    return () => ref.current.removeEventListener('keydown', handleTab);
+  }, [isOpen, ref]);
+}
+
+const ImpactModal = ({
+  isOpen, onClose, db, userId, project, editingImpact, callGeminiAPI, appId
+}) => {
+  const [formData, setFormData] = useState({});
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [error, setError] = useState('');
+  const modalRef = useRef(null);
+
+  useFocusTrap(isOpen, modalRef);
+
+  useEffect(() => {
+    setError('');
+    if (editingImpact) {
+      setFormData(editingImpact);
+    } else {
+      setFormData({
+        group: '',
+        process: '',
+        description: '',
+        impactLevel: 3,
+        impactType: 'Process'
+      });
+    }
+  }, [editingImpact, isOpen]);
+
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    setFormData((prev) => ({
+      ...prev,
+      [name]: name === 'impactLevel' ? parseInt(value) : value,
+    }));
+  };
+
+  const handleSuggestDescription = async () => {
+    if (!formData.group || !formData.process) {
+      setError("Provide Impacted Group and Process first.");
+      return;
+    }
+    setIsGenerating(true);
+    setError('');
+    try {
+      const prompt = `For a change management project called "${project.name}", describe the impact on the "${formData.group}" group regarding the "${formData.process}" process. Provide a concise description.`;
+      const suggestion = await callGeminiAPI(prompt);
+      setFormData((prev) => ({ ...prev, description: suggestion }));
+    } catch (err) {
+      setError('Error generating description.');
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError('');
+    try {
+      const collectionRef = db.collection(
+        `artifacts/${appId}/users/${userId}/projects/${project.id}/impacts`
+      );
+      if (formData.id) {
+        await collectionRef.doc(formData.id).update(formData);
+      } else {
+        await collectionRef.add({
+          ...formData,
+          createdAt: window.firebase.firestore.FieldValue.serverTimestamp(),
+        });
+      }
+      onClose();
+    } catch (err) {
+      setError('Failed to save impact. Please try again.');
+    }
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-70 flex justify-center items-center z-50" aria-modal="true" role="dialog">
+      <div className="bg-[#1F1F1F] border border-[#333] p-8 rounded-lg shadow-2xl w-full max-w-lg m-4" ref={modalRef}>
+        <h3 className="font-jakarta text-2xl font-bold text-[#B38B59] mb-6">
+          {formData.id ? 'Edit' : 'Add'} Impact
+        </h3>
+        {error && (
+          <div className="mb-4 text-red-400 font-semibold">{error}</div>
+        )}
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <input type="text" name="group" value={formData.group || ''} onChange={handleChange}
+            placeholder="Impacted Group/Role" required
+            className="w-full p-2 border border-[#333] rounded-md bg-[#141414] text-[#F3F4F6]" />
+          <input type="text" name="process" value={formData.process || ''} onChange={handleChange}
+            placeholder="Impacted Process/System" required
+            className="w-full p-2 border border-[#333] rounded-md bg-[#141414] text-[#F3F4F6]" />
+          <div>
+            <div className="flex justify-between items-center mb-1">
+              <label className="block text-sm font-medium text-gray-400">Description of Change</label>
+              <button type="button" onClick={handleSuggestDescription} disabled={isGenerating}
+                className="flex items-center gap-2 text-sm text-[#B38B59] hover:text-[#a17c50] disabled:opacity-50">
+                {isGenerating ? <LoadingSpinner small /> : <span role="img" aria-label="sparkles">✨</span>}
+                Suggest Description
+              </button>
+            </div>
+            <textarea name="description" value={formData.description || ''} onChange={handleChange}
+              placeholder="From: ... To: ..." required
+              className="w-full p-2 border border-[#333] rounded-md bg-[#141414] text-[#F3F4F6]" />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-400 mb-1">Impact Level (1-5)</label>
+            <input type="range" name="impactLevel" min="1" max="5" value={formData.impactLevel || 3} onChange={handleChange} className="w-full"/>
+          </div>
+          <select name="impactType" value={formData.impactType || 'Process'} onChange={handleChange}
+            className="w-full p-2 border border-[#333] rounded-md bg-[#141414] text-[#F3F4F6]">
+            <option>Process</option>
+            <option>Technology</option>
+            <option>Role</option>
+            <option>Culture</option>
+          </select>
+          <div className="flex justify-end gap-4 pt-4">
+            <button type="button" onClick={onClose}
+              className="px-6 py-2 bg-[#333] text-white font-jakarta font-bold rounded-md hover:bg-[#444]">Cancel</button>
+            <button type="submit"
+              className="px-6 py-2 bg-[#B38B59] text-white font-jakarta font-bold rounded-md hover:bg-[#a17c50]">Save</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+ImpactModal.propTypes = {
+  isOpen: PropTypes.bool.isRequired,
+  onClose: PropTypes.func.isRequired,
+  db: PropTypes.object.isRequired,
+  userId: PropTypes.string.isRequired,
+  project: PropTypes.object.isRequired,
+  editingImpact: PropTypes.object,
+  callGeminiAPI: PropTypes.func.isRequired,
+  appId: PropTypes.string.isRequired,
+};
+
+export default ImpactModal;
