@@ -1,0 +1,174 @@
+import React, { useState, useEffect, useRef } from 'react';
+import PropTypes from 'prop-types';
+import LoadingSpinner from '../common/LoadingSpinner';
+
+function useFocusTrap(isOpen, ref) {
+  useEffect(() => {
+    if (!isOpen || !ref.current) return;
+    const focusable = ref.current.querySelectorAll(
+      'input, select, textarea, button, [tabindex]:not([tabindex="-1"])'
+    );
+    if (focusable.length) focusable[0].focus();
+    const handleTab = (e) => {
+      if (e.key !== 'Tab') return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    ref.current.addEventListener('keydown', handleTab);
+    return () => ref.current.removeEventListener('keydown', handleTab);
+  }, [isOpen, ref]);
+}
+
+const SuccessMetricModal = ({
+  isOpen, onClose, db, userId, project, editingMetric, callGeminiAPI, appId
+}) => {
+  const [formData, setFormData] = useState({});
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [error, setError] = useState('');
+  const modalRef = useRef(null);
+
+  useFocusTrap(isOpen, modalRef);
+
+  useEffect(() => {
+    setError('');
+    if (editingMetric) {
+      setFormData(editingMetric);
+    } else {
+      setFormData({
+        metric: '',
+        category: 'Business Outcome',
+        target: 0,
+        current: 0,
+        status: 'On Track',
+        dataSource: '',
+      });
+    }
+  }, [editingMetric, isOpen]);
+
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    setFormData((prev) => ({
+      ...prev,
+      [name]:
+        name === 'target' || name === 'current'
+          ? Number(value)
+          : value,
+    }));
+  };
+
+  const handleSuggestMetrics = async () => {
+    setIsGenerating(true);
+    setError('');
+    try {
+      const prompt = `As a change management expert, suggest one key success metric for a project called "${project.name}". The metric should be in the category of "${formData.category}". Provide a concise metric description only.`;
+      const suggestion = await callGeminiAPI(prompt);
+      setFormData((prev) => ({ ...prev, metric: suggestion }));
+    } catch (err) {
+      setError('Error generating metric suggestion.');
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError('');
+    try {
+      const collectionRef = db.collection(
+        `artifacts/${appId}/users/${userId}/projects/${project.id}/successMetrics`
+      );
+      if (formData.id) {
+        await collectionRef.doc(formData.id).update(formData);
+      } else {
+        await collectionRef.add({
+          ...formData,
+          createdAt: window.firebase.firestore.FieldValue.serverTimestamp(),
+        });
+      }
+      onClose();
+    } catch (err) {
+      setError('Failed to save metric. Please try again.');
+    }
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-70 flex justify-center items-center z-50" aria-modal="true" role="dialog">
+      <div className="bg-[#1F1F1F] border border-[#333] p-8 rounded-lg shadow-2xl w-full max-w-lg m-4" ref={modalRef}>
+        <h3 className="font-jakarta text-2xl font-bold text-[#B38B59] mb-6">
+          {formData.id ? 'Edit' : 'Add'} Success Metric
+        </h3>
+        {error && (
+          <div className="mb-4 text-red-400 font-semibold">{error}</div>
+        )}
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <select name="category" value={formData.category || 'Business Outcome'} onChange={handleChange}
+            className="w-full p-2 border border-[#333] rounded-md bg-[#141414] text-[#F3F4F6]">
+            <option>Business Outcome</option>
+            <option>Adoption</option>
+            <option>Proficiency</option>
+            <option>Sentiment</option>
+          </select>
+          <div>
+            <div className="flex justify-between items-center mb-1">
+              <label className="block text-sm font-medium text-gray-400">Metric Description</label>
+              <button type="button" onClick={handleSuggestMetrics} disabled={isGenerating}
+                className="flex items-center gap-2 text-sm text-[#B38B59] hover:text-[#a17c50] disabled:opacity-50">
+                {isGenerating ? <LoadingSpinner small /> : <span role="img" aria-label="sparkles">✨</span>}
+                Suggest Metric
+              </button>
+            </div>
+            <textarea name="metric" value={formData.metric || ''} onChange={handleChange}
+              placeholder="e.g., Increase lead conversion rate by 15%" required
+              className="w-full p-2 border border-[#333] rounded-md bg-[#141414] text-[#F3F4F6]" />
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <input type="number" name="target" value={formData.target || 0} onChange={handleChange}
+              placeholder="Target Value" required
+              className="w-full p-2 border border-[#333] rounded-md bg-[#141414] text-[#F3F4F6]" />
+            <input type="number" name="current" value={formData.current || 0} onChange={handleChange}
+              placeholder="Current Value" required
+              className="w-full p-2 border border-[#333] rounded-md bg-[#141414] text-[#F3F4F6]" />
+          </div>
+          <select name="status" value={formData.status || 'On Track'} onChange={handleChange}
+            className="w-full p-2 border border-[#333] rounded-md bg-[#141414] text-[#F3F4F6]">
+            <option>On Track</option>
+            <option>At Risk</option>
+            <option>Off Track</option>
+            <option>Achieved</option>
+          </select>
+          <input type="text" name="dataSource" value={formData.dataSource || ''} onChange={handleChange}
+            placeholder="Data Source (e.g., Salesforce Report)" required
+            className="w-full p-2 border border-[#333] rounded-md bg-[#141414] text-[#F3F4F6]" />
+          <div className="flex justify-end gap-4 pt-4">
+            <button type="button" onClick={onClose}
+              className="px-6 py-2 bg-[#333] text-white font-jakarta font-bold rounded-md hover:bg-[#444]">Cancel</button>
+            <button type="submit"
+              className="px-6 py-2 bg-[#B38B59] text-white font-jakarta font-bold rounded-md hover:bg-[#a17c50]">Save</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+SuccessMetricModal.propTypes = {
+  isOpen: PropTypes.bool.isRequired,
+  onClose: PropTypes.func.isRequired,
+  db: PropTypes.object.isRequired,
+  userId: PropTypes.string.isRequired,
+  project: PropTypes.object.isRequired,
+  editingMetric: PropTypes.object,
+  callGeminiAPI: PropTypes.func.isRequired,
+  appId: PropTypes.string.isRequired,
+};
+
+export default SuccessMetricModal;
